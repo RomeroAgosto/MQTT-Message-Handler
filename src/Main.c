@@ -2,12 +2,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include "MQTTClient.h"
+#include <pthread.h>
 
 #define ADDRESS     "tcp://localhost:1883"
 #define CLIENTID    "Handler"
 #define TIMEOUT     10000L
 
 volatile MQTTClient_deliveryToken deliveredtoken;
+
+pthread_mutex_t lock;
 
 MQTTClient client;
 MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
@@ -29,6 +32,12 @@ int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *m
     printf("     topic: %s\n", topicName);
     printf("   message: ");
 
+    if(strcmp(topicName,"Control")==0)
+       {
+       	if(strcmp(message->payload,"q")==0) pthread_mutex_unlock(&lock);
+       }
+
+
     payloadptr = message->payload;
     for(i=0; i<message->payloadlen; i++)
     {
@@ -48,7 +57,12 @@ void connlost(void *context, char *cause)
 
 void initHandler()
 {
-	 int rc;
+	int rc;
+	if (pthread_mutex_init(&lock, NULL) != 0)
+	{
+		printf("\n mutex init has failed\n");
+		exit(1);
+	}
 
 	MQTTClient_create(&client, ADDRESS, CLIENTID,
 	MQTTCLIENT_PERSISTENCE_NONE, NULL);
@@ -81,17 +95,17 @@ void msgdelivery(char TOPIC[], char PAYLOAD[], int QOS)
 
 void topSub(char TOPIC[], int QOS)
 {
-	int ch;
-	printf("Subscribing to topic %s\nfor client %s using QoS%d\n\n"
-	           "Press Q<Enter> to quit\n\n", TOPIC, CLIENTID, QOS);
-	    MQTTClient_subscribe(client, TOPIC, QOS);
+	MQTTClient_subscribe(client, TOPIC, QOS);
 
-	do
-	{
-		ch = getchar();
-	} while(ch!='Q' && ch != 'q');
+}
 
-
+void * WorkerThread(void * a)
+{
+	pthread_mutex_lock(&lock);
+	topSub("MQTT Queue", 1);
+	topSub("Control", 1);
+	topSub("MQTT Message", 1);
+	return NULL;
 }
 
 void topUnsub(char TOPIC[])
@@ -102,12 +116,19 @@ int main(int argc, char* argv[])
 {
 	initHandler();
 
-	//pthread_t thread_id;
-	//pthread_create(&thread_id, NULL,topSub, "MQTT Message", 1);
+	pthread_t thread_id;
+	pthread_create(&thread_id, NULL, WorkerThread, NULL);
 
     msgdelivery("MQTT Examples", "Hello World!", 1);
-    while(1);
+
+    sleep(1);
+	pthread_mutex_lock(&lock);
+
+    pthread_join(thread_id, NULL);
+
     MQTTClient_disconnect(client, 10000);
     MQTTClient_destroy(&client);
+
+    pthread_mutex_destroy(&lock);
     return 0;
 }
