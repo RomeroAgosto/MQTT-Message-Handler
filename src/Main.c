@@ -102,8 +102,8 @@ void topSub(char TOPIC[], int QOS)
 void * WorkerThread(void * a)
 {
 	pthread_mutex_lock(&lock);
-	topSub("MQTT Queue", 1);
 	topSub("Control", 1);
+	topSub("MQTT Queue", 1);
 	topSub("MQTT Message", 1);
 	return NULL;
 }
