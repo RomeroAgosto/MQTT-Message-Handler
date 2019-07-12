@@ -3,6 +3,10 @@
 #include <string.h>
 #include "MQTTClient.h"
 #include <pthread.h>
+#include <unistd.h>
+
+#include <sys/ipc.h>
+#include <sys/msg.h>
 
 #define ADDRESS     "tcp://localhost:1883"
 #define CLIENTID    "Handler"
@@ -16,6 +20,11 @@ MQTTClient client;
 MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
 MQTTClient_message pubmsg = MQTTClient_message_initializer;
 MQTTClient_deliveryToken token;
+
+struct mesg_buffer {
+    long mesg_type;
+    char mesg_text[100];
+} message;
 
 void delivered(void *context, MQTTClient_deliveryToken dt)
 {
@@ -76,6 +85,7 @@ void initHandler()
 		printf("Failed to connect, return code %d\n", rc);
 		exit(EXIT_FAILURE);
 	}
+
 }
 
 void msgdelivery(char TOPIC[], char PAYLOAD[], int QOS)
@@ -86,9 +96,7 @@ void msgdelivery(char TOPIC[], char PAYLOAD[], int QOS)
     pubmsg.retained = 0;
     deliveredtoken = 0;
     MQTTClient_publishMessage(client, TOPIC, &pubmsg, &token);
-    printf("Waiting for publication of %s\n"
-            "on topic %s for client with ClientID: %s\n",
-            PAYLOAD, TOPIC, CLIENTID);
+
     while(deliveredtoken != token);
 
 }
@@ -116,15 +124,41 @@ int main(int argc, char* argv[])
 {
 	initHandler();
 
+	key_t key;
+	int msgid;
+
+	if(argc==2)
+	{
+		key = atoi(argv[1]);
+	}else
+	{
+		// ftok to generate unique key
+		key = ftok("progfile", 65);
+	}
+
+	// msgget creates a message queue
+	// and returns identifier
+
+	msgid = msgget(key, 0666 | IPC_CREAT);
+
+	printf("Handler: %d\n", msgid);
+
+    // msgrcv to receive message
+    msgrcv(msgid, &message, sizeof(message), 1, 0);
+    printf("Received: %s\n", message.mesg_text);
+
+	msgdelivery("Queue", message.mesg_text, 1);
+
 	pthread_t thread_id;
 	pthread_create(&thread_id, NULL, WorkerThread, NULL);
-
-    msgdelivery("MQTT Examples", "Hello World!", 1);
 
     sleep(1);
 	pthread_mutex_lock(&lock);
 
     pthread_join(thread_id, NULL);
+
+    // to destroy the message queue
+    msgctl(msgid, IPC_RMID, NULL);
 
     MQTTClient_disconnect(client, 10000);
     MQTTClient_destroy(&client);
