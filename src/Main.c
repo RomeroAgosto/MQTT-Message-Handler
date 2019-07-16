@@ -8,11 +8,18 @@
 #include <sys/ipc.h>
 #include <sys/msg.h>
 
+#define TYPE_SUB 1
+#define TYPE_PUB 2
+#define TYPE_TOP 3
+#define TYPE_MES 4
+
 #define ADDRESS     "tcp://localhost:1883"
 #define CLIENTID    "Handler"
 #define TIMEOUT     10000L
 
 volatile MQTTClient_deliveryToken deliveredtoken;
+
+int msgid;
 
 pthread_mutex_t lock;
 
@@ -24,7 +31,11 @@ MQTTClient_deliveryToken token;
 struct mesg_buffer {
     long mesg_type;
     char mesg_text[100];
-} message;
+} QueueMessage;
+
+void MessageQueueSend(char information[]);
+
+void sendMessage();
 
 void delivered(void *context, MQTTClient_deliveryToken dt)
 {
@@ -110,9 +121,13 @@ void topSub(char TOPIC[], int QOS)
 void * WorkerThread(void * a)
 {
 	pthread_mutex_lock(&lock);
-	topSub("MQTT Queue", 1);
 	topSub("Control", 1);
-	topSub("MQTT Message", 1);
+
+    // msgrcv to receive message
+    msgrcv(msgid, &QueueMessage, sizeof(QueueMessage), 1, 0);
+    topSub(QueueMessage.mesg_text,1);
+	topSub("Test",1);
+
 	return NULL;
 }
 
@@ -125,7 +140,6 @@ int main(int argc, char* argv[])
 	initHandler();
 
 	key_t key;
-	int msgid;
 
 	if(argc==2)
 	{
@@ -141,13 +155,15 @@ int main(int argc, char* argv[])
 
 	msgid = msgget(key, 0666 | IPC_CREAT);
 
-	printf("Handler: %d\n", msgid);
+	printf("Handler MQID: %d\n", msgid);
 
     // msgrcv to receive message
-    msgrcv(msgid, &message, sizeof(message), 1, 0);
-    printf("Received: %s\n", message.mesg_text);
+    msgrcv(msgid, &QueueMessage, sizeof(QueueMessage), 1, 0);
+    printf("H--Received: %s\n", QueueMessage.mesg_text);
 
-	msgdelivery("Queue", message.mesg_text, 1);
+	msgdelivery("Queue", QueueMessage.mesg_text, 1);
+
+	MessageQueueSend("Hi from world");
 
 	pthread_t thread_id;
 	pthread_create(&thread_id, NULL, WorkerThread, NULL);
@@ -165,4 +181,17 @@ int main(int argc, char* argv[])
 
     pthread_mutex_destroy(&lock);
     return 0;
+}
+
+void MessageQueueSend(char information[]) {
+	//Inform that it is a subscribe and to what topic
+	QueueMessage.mesg_type=TYPE_SUB;
+
+	strncpy(QueueMessage.mesg_text, information, 100);
+
+	sendMessage();
+}
+
+void sendMessage() {
+	msgsnd(msgid, &QueueMessage, sizeof(QueueMessage), 0);
 }
