@@ -11,20 +11,22 @@
 #define CLIENTID    "Handler"
 #define TIMEOUT     10000L
 
-
-// structure for message queue
-struct mesg_buffer QueueMessage;
-
+/*
 union semun {
 	int val;
 	struct semid_ds *buf;
 	unsigned short *array;
 };
+*/
+
+// structure for message queue
+struct mesg_buffer QueueMessage;
 
 volatile MQTTClient_deliveryToken deliveredtoken;
 
-static int msgid;
-static int sem_id;
+static int msgid1, msgid2;
+
+int running=1;
 
 pthread_mutex_t my_lock;
 
@@ -37,6 +39,13 @@ void MQSetup(void);
 
 void MessageQueueSend(char topic[], char content[]);
 
+void sendMessage(void);
+
+int receiveNMessage(int long n);
+
+int receiveAnyMessage(void);
+
+/*
 static int set_semvalue(void);
 
 static void del_semvalue(void);
@@ -44,15 +53,13 @@ static void del_semvalue(void);
 static int semaphore_v(void);
 
 static int semaphore_p(void);
-
-void sendMessage(void);
+*/
 
 void delivered(void *context, MQTTClient_deliveryToken dt)
 {
     printf("Message with token value %d delivery confirmed\n", dt);
     deliveredtoken = dt;
 }
-int running=1;
 
 int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *message)
 {
@@ -120,11 +127,6 @@ void * WorkerThread(void * a)
 	pthread_mutex_lock(&my_lock);
 	topSub("Control", 1);
 
-    // msgrcv to receive message
-    msgrcv(msgid, &QueueMessage, sizeof(QueueMessage), 1, 0);
-    topSub(QueueMessage.topic,1);
-	topSub("Test",1);
-
 	return NULL;
 }
 
@@ -135,22 +137,15 @@ void topUnsub(char TOPIC[])
 
 int main(int argc, char* argv[])
 {
-	sem_id = semget((key_t)SEM_KEY, 1, 0666 | IPC_CREAT);
-
-	if (!set_semvalue()) {
-		fprintf(stderr, "Failed to initialize semaphore\n");
-		exit(EXIT_FAILURE);
-	}
-
 	initHandler();
 
 	MQSetup();
 
 	long int msg_to_receive = -5;
-	int running=1;
+
 	while(running){
 		// msgrcv to receive message
-		if (msgrcv(msgid, (void *)&QueueMessage, BUFSIZ, msg_to_receive, 0) == -1) {
+		if (msgrcv(msgid1, (void *)&QueueMessage, BUFSIZ, msg_to_receive, 0) == -1) {
 			fprintf(stderr, "msgrcv failed with error: %d\n", errno);
 			exit(EXIT_FAILURE);
 		}
@@ -173,7 +168,12 @@ int main(int argc, char* argv[])
 	pthread_join(thread_id, NULL);
 */
 	//Delete Message Queue
-	if (msgctl(msgid, IPC_RMID, 0) == -1)
+	if (msgctl(msgid1, IPC_RMID, 0) == -1)
+	{
+		fprintf(stderr, "msgctl(IPC_RMID) failed\n");
+		exit(EXIT_FAILURE);
+	}
+	if (msgctl(msgid2, IPC_RMID, 0) == -1)
 	{
 		fprintf(stderr, "msgctl(IPC_RMID) failed\n");
 		exit(EXIT_FAILURE);
@@ -183,7 +183,6 @@ int main(int argc, char* argv[])
     MQTTClient_destroy(&client);
 
     pthread_mutex_destroy(&my_lock);
-    del_semvalue();
     return 0;
 }
 
@@ -192,46 +191,20 @@ void MQSetup(void)
 	// msgget creates a message queue
 	// and returns identifier
 	// msgget used to join with the queue from the Handler
-	if (!semaphore_p()) exit(EXIT_FAILURE);
-	msgid = msgget((key_t)MQ_KEY, 0666 | IPC_CREAT);
-	if (msgid == -1)
+	msgid1 = msgget((key_t)MQ_KEY1, 0666 | IPC_CREAT);
+	if (msgid1 == -1)
 	{
 		fprintf(stderr, "msgget failed with error: %d\n", errno);
 		exit(EXIT_FAILURE);
 	}
-	if (msgrcv(msgid, (void *)&QueueMessage, BUFSIZ, CONNECTION_OPEN, IPC_NOWAIT) == -1)
+	msgid2 = msgget((key_t)MQ_KEY2, 0666 | IPC_CREAT);
+	if (msgid2 == -1)
 	{
-		printf("Message Queue not opened yet\n"
-			   "Opening Message Queue and Waiting for connection from Main\n");
-		QueueMessage.mesg_type=CONNECTION_OPEN;
-		strcpy(QueueMessage.topic, "");
-		strcpy(QueueMessage.content, "Welcome to Message Queue");
-
-		if (msgsnd(msgid, (void *)&QueueMessage, MAX_TEXT, 0) == -1)
-		{
-			fprintf(stderr, "msgsnd failed\n");
-			exit(EXIT_FAILURE);
-		}
-		if (!semaphore_v()) exit(EXIT_FAILURE);
-		if (msgrcv(msgid, (void *)&QueueMessage, BUFSIZ, CONNECTION_ACK, 0) == -1)
-		{
-			fprintf(stderr, "msgrcv failed with error: %d\n", errno);
-			exit(EXIT_FAILURE);
-		}
-	}else
-	{
-		printf("Message Queue already exists, joining it...\n");
-		QueueMessage.mesg_type=CONNECTION_ACK;
-		strcpy(QueueMessage.content, "Hi");
-
-		if (msgsnd(msgid, (void *)&QueueMessage, MAX_TEXT, 0) == -1)
-		{
-			fprintf(stderr, "msgsnd failed\n");
-			exit(EXIT_FAILURE);
-		}
+		fprintf(stderr, "msgget failed with error: %d\n", errno);
+		exit(EXIT_FAILURE);
 	}
 	printf("Connection Established\n"
-			"Handler MQID: %d\n", msgid);
+			"Handler MQID: %d	&	%d\n", msgid1, msgid2);
 }
 
 void MessageQueueSend(char topic[], char content[]) {
@@ -244,7 +217,28 @@ void MessageQueueSend(char topic[], char content[]) {
 	sendMessage();
 }
 
-static int set_semvalue(void){
+void sendMessage(void) {
+	msgsnd(msgid2, &QueueMessage, BUFSIZ, 0);
+}
+
+int receiveNMessage(int long n) {
+	if (msgrcv(msgid2, (void *)&QueueMessage, BUFSIZ, n, 0) == -1) {
+		fprintf(stderr, "msgrcv failed with error: %d\n", errno);
+		exit(EXIT_FAILURE);
+	}
+	return 0;
+}
+
+int receiveAnyMessage(void) {
+	if (msgrcv(msgid2, (void *)&QueueMessage, BUFSIZ, 0, 0) == -1) {
+		fprintf(stderr, "msgrcv failed with error: %d\n", errno);
+		exit(EXIT_FAILURE);
+	}
+	return 0;
+}
+
+/*
+ * static int set_semvalue(void){
 
 	union semun sem_union;
 	sem_union.val = 1;
@@ -263,7 +257,7 @@ static int semaphore_v(void){
 
 	struct sembuf sem_b;
 	sem_b.sem_num = 0;
-	sem_b.sem_op = 1; /* V() */
+	sem_b.sem_op = 1;
 	sem_b.sem_flg = SEM_UNDO;
 	if (semop(sem_id, &sem_b, 1) == -1) {
 		fprintf(stderr, "semaphore_v failed\n");
@@ -276,7 +270,7 @@ static int semaphore_p(void){
 
 	struct sembuf sem_b;
 	sem_b.sem_num = 0;
-	sem_b.sem_op = -1; /* P() */
+	sem_b.sem_op = -1;
 	sem_b.sem_flg = SEM_UNDO;
 	if (semop(sem_id, &sem_b, 1) == -1) {
 		fprintf(stderr, "semaphore_p failed\n");
@@ -284,7 +278,4 @@ static int semaphore_p(void){
 	}
 	return(1);
 }
-
-void sendMessage(void) {
-	msgsnd(msgid, &QueueMessage, BUFSIZ, 0);
-}
+*/
