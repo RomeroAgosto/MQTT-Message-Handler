@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <pthread.h>
 #include <unistd.h>
 #include "MQTTClient.h"
 #include "C:\Users\Ricardo\eclipse-workspace\MQ Defines.h"
@@ -19,16 +18,17 @@ union semun {
 };
 */
 
-// structure for message queue
-struct mesg_buffer QueueMessage;
+// structures for message queue
+//	Struct to send
+struct mesg_buffer QueueMessageSend;
+//	Struct to serve as a buffer when a message is received to avoid overwrites
+struct mesg_buffer QueueMessageBuffer;
 
 volatile MQTTClient_deliveryToken deliveredtoken;
 
-static int msgid1, msgid2;
+static int msgid_send, msgid_receive;
 
-int running=1;
-
-pthread_mutex_t my_lock;
+char running=1;
 
 MQTTClient client;
 MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
@@ -39,7 +39,7 @@ void MQSetup(void);
 
 void MessageQueueSend(char topic[], char content[]);
 
-void sendMessage(void);
+int sendMessage(void);
 
 int receiveNMessage(int long n);
 
@@ -67,8 +67,6 @@ int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *m
 
     MQTTClient_freeMessage(&message);
     MQTTClient_free(topicName);
-    //temp
-    running=0;
 
     return 1;
 }
@@ -82,12 +80,6 @@ void connlost(void *context, char *cause)
 void initHandler()
 {
 	int rc;
-	if (pthread_mutex_init(&my_lock, NULL) != 0)
-	{
-		printf("\n mutex init has failed\n");
-		exit(1);
-	}
-
 	MQTTClient_create(&client, ADDRESS, CLIENTID,
 	MQTTCLIENT_PERSISTENCE_NONE, NULL);
 	conn_opts.keepAliveInterval = 20;
@@ -122,14 +114,6 @@ void topSub(char TOPIC[], int QOS)
 
 }
 
-void * WorkerThread(void * a)
-{
-	pthread_mutex_lock(&my_lock);
-	topSub("Control", 1);
-
-	return NULL;
-}
-
 void topUnsub(char TOPIC[])
 {
     MQTTClient_unsubscribe(client, TOPIC);
@@ -141,39 +125,24 @@ int main(int argc, char* argv[])
 
 	MQSetup();
 
-	long int msg_to_receive = -5;
-
 	while(running){
-		// msgrcv to receive message
-		if (msgrcv(msgid1, (void *)&QueueMessage, BUFSIZ, msg_to_receive, 0) == -1) {
-			fprintf(stderr, "msgrcv failed with error: %d\n", errno);
-			exit(EXIT_FAILURE);
-		}
-		printf("Type: %ld\nContent: %s\nTopic: %s\n", QueueMessage.mesg_type, QueueMessage.content, QueueMessage.topic);
-		MQTTSend("mine", QueueMessage.topic, 1);
-		if (strncmp(QueueMessage.topic, "end", 3) == 0)
+		receiveAnyMessage();
+		printf("Type: %ld\nContent: %s\nTopic: %s\n", QueueMessageBuffer.mesg_type, QueueMessageBuffer.content, QueueMessageBuffer.topic);
+		if (strncmp(QueueMessageBuffer.topic, "end", 3) == 0)
 		{
 			running = 0;
 		}
-		if(QueueMessage.mesg_type==TYPE_SUB)topSub(QueueMessage.topic,1);
-		if(QueueMessage.mesg_type==TYPE_PUB)MQTTSend(QueueMessage.topic, QueueMessage.content,1);
+		if(QueueMessageBuffer.mesg_type==TYPE_SUB)topSub(QueueMessageBuffer.topic,1);
+		if(QueueMessageBuffer.mesg_type==TYPE_PUB)MQTTSend(QueueMessageBuffer.topic, QueueMessageBuffer.content,1);
 	}
 
-	/*pthread_t thread_id;
-	pthread_create(&thread_id, NULL, WorkerThread, NULL);
-
-	sleep(1);
-	pthread_mutex_lock(&my_lock);
-
-	pthread_join(thread_id, NULL);
-*/
 	//Delete Message Queue
-	if (msgctl(msgid1, IPC_RMID, 0) == -1)
+	if (msgctl(msgid_send, IPC_RMID, 0) == -1)
 	{
 		fprintf(stderr, "msgctl(IPC_RMID) failed\n");
 		exit(EXIT_FAILURE);
 	}
-	if (msgctl(msgid2, IPC_RMID, 0) == -1)
+	if (msgctl(msgid_receive, IPC_RMID, 0) == -1)
 	{
 		fprintf(stderr, "msgctl(IPC_RMID) failed\n");
 		exit(EXIT_FAILURE);
@@ -182,7 +151,6 @@ int main(int argc, char* argv[])
     MQTTClient_disconnect(client, 10000);
     MQTTClient_destroy(&client);
 
-    pthread_mutex_destroy(&my_lock);
     return 0;
 }
 
@@ -191,38 +159,42 @@ void MQSetup(void)
 	// msgget creates a message queue
 	// and returns identifier
 	// msgget used to join with the queue from the Handler
-	msgid1 = msgget((key_t)MQ_KEY1, 0666 | IPC_CREAT);
-	if (msgid1 == -1)
+	msgid_receive = msgget((key_t)MQKEY_TOHANDLER, 0666 | IPC_CREAT);
+	if (msgid_receive == -1)
 	{
 		fprintf(stderr, "msgget failed with error: %d\n", errno);
 		exit(EXIT_FAILURE);
 	}
-	msgid2 = msgget((key_t)MQ_KEY2, 0666 | IPC_CREAT);
-	if (msgid2 == -1)
+	msgid_send = msgget((key_t)MQKEY_FROMHANDLER, 0666 | IPC_CREAT);
+	if (msgid_send == -1)
 	{
 		fprintf(stderr, "msgget failed with error: %d\n", errno);
 		exit(EXIT_FAILURE);
 	}
 	printf("Connection Established\n"
-			"Handler MQID: %d	&	%d\n", msgid1, msgid2);
+			"Handler MQID: %d	&	%d\n", msgid_send, msgid_receive);
 }
 
 void MessageQueueSend(char topic[], char content[]) {
 	//Inform that it is a subscribe and to what topic
-	QueueMessage.mesg_type=TYPE_HANDLER2MAIN;
 
-	strncpy(QueueMessage.topic, topic, BUFSIZ/2);
-	strncpy(QueueMessage.content, content, BUFSIZ/2);
+	QueueMessageSend.mesg_type=1;
+	strncpy(QueueMessageSend.topic, topic, BUFSIZ/2);
+	strncpy(QueueMessageSend.content, content, BUFSIZ/2);
 
 	sendMessage();
 }
 
-void sendMessage(void) {
-	msgsnd(msgid2, &QueueMessage, BUFSIZ, 0);
+int sendMessage(void) {
+	if (msgsnd(msgid_send, (void *)&QueueMessageSend, MAX_TEXT, 0) == -1) {
+		fprintf(stderr, "msgsnd failed\n");
+		exit(EXIT_FAILURE);
+	}
+	return 0;
 }
 
 int receiveNMessage(int long n) {
-	if (msgrcv(msgid2, (void *)&QueueMessage, BUFSIZ, n, 0) == -1) {
+	if (msgrcv(msgid_receive, (void *)&QueueMessageBuffer, BUFSIZ, n, 0) == -1) {
 		fprintf(stderr, "msgrcv failed with error: %d\n", errno);
 		exit(EXIT_FAILURE);
 	}
@@ -230,7 +202,7 @@ int receiveNMessage(int long n) {
 }
 
 int receiveAnyMessage(void) {
-	if (msgrcv(msgid2, (void *)&QueueMessage, BUFSIZ, 0, 0) == -1) {
+	if (msgrcv(msgid_receive, (void *)&QueueMessageBuffer, BUFSIZ, 0, 0) == -1) {
 		fprintf(stderr, "msgrcv failed with error: %d\n", errno);
 		exit(EXIT_FAILURE);
 	}
