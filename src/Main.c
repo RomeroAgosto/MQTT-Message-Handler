@@ -6,6 +6,8 @@
 #include "MQTTClient.h"
 #include "C:\Users\Ricardo\eclipse-workspace\MQ Defines.h"
 
+//#define DEBUG
+
 #define ADDRESS     "tcp://localhost:1883"
 #define CLIENTID    "Handler"
 #define TIMEOUT     10000L
@@ -57,7 +59,9 @@ static int semaphore_p(void);
 
 void delivered(void *context, MQTTClient_deliveryToken dt)
 {
+#ifdef DEBUG
     printf("Message with token value %d delivery confirmed\n", dt);
+#endif
     deliveredtoken = dt;
 }
 
@@ -73,8 +77,10 @@ int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *m
 
 void connlost(void *context, char *cause)
 {
+#ifdef DEBUG
     printf("\nConnection lost\n");
     printf("     cause: %s\n", cause);
+#endif
 }
 
 void initHandler()
@@ -127,7 +133,9 @@ int main(int argc, char* argv[])
 
 	while(running){
 		receiveAnyMessage();
+#ifdef DEBUG
 		printf("Type: %ld\nContent: %s\nTopic: %s\n", QueueMessageBuffer.mesg_type, QueueMessageBuffer.content, QueueMessageBuffer.topic);
+#endif
 		if (strncmp(QueueMessageBuffer.topic, "end", 3) == 0)
 		{
 			running = 0;
@@ -171,8 +179,10 @@ void MQSetup(void)
 		fprintf(stderr, "msgget failed with error: %d\n", errno);
 		exit(EXIT_FAILURE);
 	}
+#ifdef DEBUG
 	printf("Connection Established\n"
 			"Handler MQID: %d	&	%d\n", msgid_send, msgid_receive);
+#endif
 }
 
 void MessageQueueSend(char topic[], char content[]) {
